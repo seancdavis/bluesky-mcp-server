@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "netlify-skills@netlify-context-and-tools": true
+  }
+}
