@@ -1,0 +1,26 @@
+{
+  "name": "bluesky-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A personal, single-user MCP server for Bluesky / AT Protocol, deployable to Netlify.",
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "tsc --noEmit",
+    "deploy": "netlify deploy --build --prod"
+  },
+  "dependencies": {
+    "@atproto/api": "^0.13.35",
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "express": "^4.21.2",
+    "serverless-http": "^3.2.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^3.0.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "netlify-cli": "^17.38.0",
+    "typescript": "^5.7.2"
+  }
+}
