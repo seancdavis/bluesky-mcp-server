@@ -1,22 +1,62 @@
-import { z } from "zod";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { RichText, AppBskyFeedDefs, AppBskyNotificationListNotifications } from "@atproto/api";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { RichText, type AppBskyFeedDefs, type AppBskyNotificationListNotifications } from "@atproto/api";
 import {
-  getAgent,
-  resolvePostUri,
-  resolveActorDid,
   bskyUrlFromAtUri,
-} from "./bluesky.js";
+  getAgent,
+  resolveActorDid,
+  resolvePostUri,
+} from "../bluesky";
 
-const ok = (text: string): CallToolResult => ({
-  content: [{ type: "text", text }],
-});
+export interface ToolContent {
+  type: "text";
+  text: string;
+}
 
-const fail = (text: string): CallToolResult => ({
+export interface ToolResult {
+  content: ToolContent[];
+  isError?: boolean;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: object;
+  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+const fail = (text: string): ToolResult => ({
   isError: true,
   content: [{ type: "text", text }],
 });
+
+function requireString(args: Record<string, unknown>, key: string): string {
+  const v = args[key];
+  if (typeof v !== "string" || v.length === 0) {
+    throw new Error(`Missing required string parameter: ${key}`);
+  }
+  return v;
+}
+
+function optionalString(args: Record<string, unknown>, key: string): string | undefined {
+  const v = args[key];
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
+  const v = args[key];
+  return typeof v === "number" && !Number.isNaN(v) ? v : undefined;
+}
+
+function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
+  const v = args[key];
+  return typeof v === "boolean" ? v : undefined;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.floor(n)));
+}
 
 function formatPostView(post: AppBskyFeedDefs.PostView): string {
   const record = post.record as { text?: string; createdAt?: string };
@@ -44,15 +84,12 @@ function formatNotification(n: AppBskyNotificationListNotifications.Notification
   return `[${n.reason}] ${author}${snippet}\nreasonSubject: ${n.reasonSubject ?? "(none)"}\nuri: ${n.uri}\nat: ${n.indexedAt}\nisRead: ${n.isRead}`;
 }
 
-export function setupMCPServer(): McpServer {
-  const server = new McpServer({
-    name: "bluesky-mcp-server",
-    version: "0.1.0",
-  });
+// ── tool definitions ─────────────────────────────────────────────────────
 
-  server.tool(
-    "create_post",
-    [
+export const tools: ToolDefinition[] = [
+  {
+    name: "create_post",
+    description: [
       "Publish a new post (or reply) to Bluesky from the authenticated account.",
       "",
       "SAFETY: Before calling this tool, show the exact post text to the user and get explicit confirmation ('yes', 'post it', etc.). Do not silently edit, shorten, or 'fix' the text without confirmation. Posts are public and effectively permanent.",
@@ -61,22 +98,28 @@ export function setupMCPServer(): McpServer {
       "",
       "To reply, pass `reply_to` as either an at:// URI or a https://bsky.app/profile/<handle>/post/<rkey> URL.",
     ].join("\n"),
-    {
-      text: z.string().min(1).max(3000).describe("The post text. Max 300 graphemes per Bluesky."),
-      reply_to: z
-        .string()
-        .optional()
-        .describe("Optional. AT URI or bsky.app URL of the post being replied to."),
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The post text. Max 300 graphemes." },
+        reply_to: {
+          type: "string",
+          description: "Optional. AT URI or bsky.app URL of the post being replied to.",
+        },
+      },
+      required: ["text"],
     },
-    async ({ text, reply_to }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const text = requireString(args, "text");
+      const replyTo = optionalString(args, "reply_to");
       try {
         const agent = await getAgent();
         const rt = new RichText({ text });
         await rt.detectFacets(agent);
 
         let reply: { root: { uri: string; cid: string }; parent: { uri: string; cid: string } } | undefined;
-        if (reply_to) {
-          const parentUri = await resolvePostUri(agent, reply_to);
+        if (replyTo) {
+          const parentUri = await resolvePostUri(agent, replyTo);
           const res = await agent.getPosts({ uris: [parentUri] });
           const parent = res.data.posts[0];
           if (!parent) return fail(`Parent post not found: ${parentUri}`);
@@ -101,15 +144,20 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to post: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "delete_post",
-    "Delete one of your own posts. Provide the at:// URI or the bsky.app URL. Irreversible.",
-    {
-      uri: z.string().describe("AT URI or bsky.app URL of the post to delete."),
+  {
+    name: "delete_post",
+    description: "Delete one of your own posts. Provide the at:// URI or the bsky.app URL. Irreversible.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uri: { type: "string", description: "AT URI or bsky.app URL of the post to delete." },
+      },
+      required: ["uri"],
     },
-    async ({ uri }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
       try {
         const agent = await getAgent();
         const resolved = await resolvePostUri(agent, uri);
@@ -119,16 +167,21 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to delete: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "get_timeline",
-    "Fetch the authenticated account's home timeline. Returns most-recent posts first. Use `cursor` to paginate.",
-    {
-      limit: z.number().int().min(1).max(100).default(30).describe("Number of posts to fetch (1-100)."),
-      cursor: z.string().optional().describe("Pagination cursor from a previous response."),
+  {
+    name: "get_timeline",
+    description: "Fetch the authenticated account's home timeline. Returns most-recent posts first. Use `cursor` to paginate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of posts (1-100). Default 30." },
+        cursor: { type: "string", description: "Pagination cursor from a previous response." },
+      },
     },
-    async ({ limit, cursor }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const limit = clamp(optionalNumber(args, "limit") ?? 30, 1, 100);
+      const cursor = optionalString(args, "cursor");
       try {
         const agent = await getAgent();
         const res = await agent.getTimeline({ limit, cursor });
@@ -141,27 +194,33 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to fetch timeline: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "get_notifications",
-    "Fetch recent notifications (likes, reposts, follows, mentions, replies, quotes) for the authenticated account.",
-    {
-      limit: z.number().int().min(1).max(100).default(30).describe("Number of notifications (1-100)."),
-      cursor: z.string().optional().describe("Pagination cursor."),
-      mark_as_seen: z
-        .boolean()
-        .default(false)
-        .describe("If true, marks notifications as read after fetching."),
+  {
+    name: "get_notifications",
+    description: "Fetch recent notifications (likes, reposts, follows, mentions, replies, quotes) for the authenticated account.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of notifications (1-100). Default 30." },
+        cursor: { type: "string", description: "Pagination cursor." },
+        mark_as_seen: {
+          type: "boolean",
+          description: "If true, marks notifications as read after fetching. Default false.",
+        },
+      },
     },
-    async ({ limit, cursor, mark_as_seen }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const limit = clamp(optionalNumber(args, "limit") ?? 30, 1, 100);
+      const cursor = optionalString(args, "cursor");
+      const markAsSeen = optionalBoolean(args, "mark_as_seen") ?? false;
       try {
         const agent = await getAgent();
         const res = await agent.listNotifications({ limit, cursor });
         const formatted = res.data.notifications
           .map((n, i) => `--- [${i + 1}] ---\n${formatNotification(n)}`)
           .join("\n\n");
-        if (mark_as_seen) {
+        if (markAsSeen) {
           await agent.updateSeenNotifications(new Date().toISOString());
         }
         const tail = res.data.cursor ? `\n\nnext_cursor: ${res.data.cursor}` : "";
@@ -170,18 +229,27 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to fetch notifications: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "search_posts",
-    "Search Bluesky posts by keyword. Returns matching posts ordered by relevance (default) or latest.",
-    {
-      query: z.string().min(1).describe("Search query."),
-      limit: z.number().int().min(1).max(100).default(25).describe("Max results (1-100)."),
-      sort: z.enum(["top", "latest"]).default("top").describe("Sort order."),
-      cursor: z.string().optional().describe("Pagination cursor."),
+  {
+    name: "search_posts",
+    description: "Search Bluesky posts by keyword. Returns matching posts ordered by relevance (default) or latest.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query." },
+        limit: { type: "number", description: "Max results (1-100). Default 25." },
+        sort: { type: "string", enum: ["top", "latest"], description: "Sort order. Default 'top'." },
+        cursor: { type: "string", description: "Pagination cursor." },
+      },
+      required: ["query"],
     },
-    async ({ query, limit, sort, cursor }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const query = requireString(args, "query");
+      const limit = clamp(optionalNumber(args, "limit") ?? 25, 1, 100);
+      const sortInput = optionalString(args, "sort");
+      const sort: "top" | "latest" = sortInput === "latest" ? "latest" : "top";
+      const cursor = optionalString(args, "cursor");
       try {
         const agent = await getAgent();
         const res = await agent.app.bsky.feed.searchPosts({ q: query, limit, sort, cursor });
@@ -194,16 +262,22 @@ export function setupMCPServer(): McpServer {
         return fail(`Search failed: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "search_users",
-    "Search for Bluesky users by handle, name, or description.",
-    {
-      query: z.string().min(1).describe("Search query."),
-      limit: z.number().int().min(1).max(100).default(25).describe("Max results (1-100)."),
+  {
+    name: "search_users",
+    description: "Search for Bluesky users by handle, name, or description.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query." },
+        limit: { type: "number", description: "Max results (1-100). Default 25." },
+      },
+      required: ["query"],
     },
-    async ({ query, limit }): Promise<CallToolResult> => {
+    handler: async (args) => {
+      const query = requireString(args, "query");
+      const limit = clamp(optionalNumber(args, "limit") ?? 25, 1, 100);
       try {
         const agent = await getAgent();
         const res = await agent.app.bsky.actor.searchActors({ q: query, limit });
@@ -219,13 +293,18 @@ export function setupMCPServer(): McpServer {
         return fail(`User search failed: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "like_post",
-    "Like a post. Accepts an at:// URI or a bsky.app URL.",
-    { uri: z.string().describe("AT URI or bsky.app URL of the post.") },
-    async ({ uri }): Promise<CallToolResult> => {
+  {
+    name: "like_post",
+    description: "Like a post. Accepts an at:// URI or a bsky.app URL.",
+    inputSchema: {
+      type: "object",
+      properties: { uri: { type: "string", description: "AT URI or bsky.app URL of the post." } },
+      required: ["uri"],
+    },
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
       try {
         const agent = await getAgent();
         const resolved = await resolvePostUri(agent, uri);
@@ -238,13 +317,20 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to like: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "unlike_post",
-    "Remove your like from a post. Accepts the original post URI (the tool will look up your like record).",
-    { uri: z.string().describe("AT URI or bsky.app URL of the post you previously liked.") },
-    async ({ uri }): Promise<CallToolResult> => {
+  {
+    name: "unlike_post",
+    description: "Remove your like from a post. Accepts the original post URI (the tool will look up your like record).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uri: { type: "string", description: "AT URI or bsky.app URL of the post you previously liked." },
+      },
+      required: ["uri"],
+    },
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
       try {
         const agent = await getAgent();
         const resolved = await resolvePostUri(agent, uri);
@@ -259,13 +345,18 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to unlike: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "repost",
-    "Repost (boost) a post to your followers. Accepts an at:// URI or a bsky.app URL.",
-    { uri: z.string().describe("AT URI or bsky.app URL of the post.") },
-    async ({ uri }): Promise<CallToolResult> => {
+  {
+    name: "repost",
+    description: "Repost (boost) a post to your followers. Accepts an at:// URI or a bsky.app URL.",
+    inputSchema: {
+      type: "object",
+      properties: { uri: { type: "string", description: "AT URI or bsky.app URL of the post." } },
+      required: ["uri"],
+    },
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
       try {
         const agent = await getAgent();
         const resolved = await resolvePostUri(agent, uri);
@@ -278,13 +369,20 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to repost: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "unrepost",
-    "Remove your repost of a post. Accepts the original post URI.",
-    { uri: z.string().describe("AT URI or bsky.app URL of the post you reposted.") },
-    async ({ uri }): Promise<CallToolResult> => {
+  {
+    name: "unrepost",
+    description: "Remove your repost of a post. Accepts the original post URI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uri: { type: "string", description: "AT URI or bsky.app URL of the post you reposted." },
+      },
+      required: ["uri"],
+    },
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
       try {
         const agent = await getAgent();
         const resolved = await resolvePostUri(agent, uri);
@@ -299,13 +397,18 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to unrepost: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "follow_user",
-    "Follow a Bluesky user by handle (e.g. alice.bsky.social) or DID.",
-    { actor: z.string().describe("Handle (with or without @) or DID.") },
-    async ({ actor }): Promise<CallToolResult> => {
+  {
+    name: "follow_user",
+    description: "Follow a Bluesky user by handle (e.g. alice.bsky.social) or DID.",
+    inputSchema: {
+      type: "object",
+      properties: { actor: { type: "string", description: "Handle (with or without @) or DID." } },
+      required: ["actor"],
+    },
+    handler: async (args) => {
+      const actor = requireString(args, "actor");
       try {
         const agent = await getAgent();
         const did = await resolveActorDid(agent, actor);
@@ -315,13 +418,18 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to follow: ${(err as Error).message}`);
       }
     },
-  );
+  },
 
-  server.tool(
-    "unfollow_user",
-    "Unfollow a Bluesky user by handle or DID. (Looks up your follow record automatically.)",
-    { actor: z.string().describe("Handle (with or without @) or DID.") },
-    async ({ actor }): Promise<CallToolResult> => {
+  {
+    name: "unfollow_user",
+    description: "Unfollow a Bluesky user by handle or DID. (Looks up your follow record automatically.)",
+    inputSchema: {
+      type: "object",
+      properties: { actor: { type: "string", description: "Handle (with or without @) or DID." } },
+      required: ["actor"],
+    },
+    handler: async (args) => {
+      const actor = requireString(args, "actor");
       try {
         const agent = await getAgent();
         const did = await resolveActorDid(agent, actor);
@@ -334,7 +442,7 @@ export function setupMCPServer(): McpServer {
         return fail(`Failed to unfollow: ${(err as Error).message}`);
       }
     },
-  );
+  },
+];
 
-  return server;
-}
+export const toolsByName = new Map(tools.map((t) => [t.name, t]));

@@ -132,13 +132,18 @@ guarantee. If Claude is misbehaving, revoke its app password at
 ```
 netlify/
   functions/
-    mcp.ts                 # Netlify entry: express + serverless-http + bearer auth
-    _shared/auth.ts        # Bearer-token middleware
-  mcp-server/
-    index.ts               # McpServer instance + all tool definitions
+    mcp.ts                 # Netlify v2 function — mounts /mcp, bearer auth, JSON-RPC entry
+  lib/
     bluesky.ts             # AtpAgent singleton, URI/handle resolution helpers
-netlify.toml               # Mounts /mcp -> /.netlify/functions/mcp
+    mcp/
+      bearer.ts            # Constant-time bearer-token check
+      protocol.ts          # JSON-RPC types and helpers
+      dispatch.ts          # JSON-RPC dispatcher (initialize, tools/list, tools/call, ping)
+      tools.ts             # Plain registry of Bluesky tool definitions
 ```
+
+The server speaks plain JSON-RPC over HTTP POST — no Streamable HTTP transport,
+no SSE, no session state. Each request is independent.
 
 ## License
 

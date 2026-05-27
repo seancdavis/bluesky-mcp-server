@@ -4,10 +4,3 @@
 
 [functions]
   node_bundler = "esbuild"
-  included_files = []
-
-[[redirects]]
-  from = "/mcp"
-  to = "/.netlify/functions/mcp"
-  status = 200
-  force = true

@@ -10,15 +10,10 @@
     "deploy": "netlify deploy --build --prod"
   },
   "dependencies": {
-    "@atproto/api": "^0.13.35",
-    "@modelcontextprotocol/sdk": "^1.18.1",
-    "express": "^4.21.2",
-    "serverless-http": "^3.2.0",
-    "zod": "^3.23.8"
+    "@atproto/api": "^0.13.35"
   },
   "devDependencies": {
     "@netlify/functions": "^3.0.0",
-    "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
     "netlify-cli": "^17.38.0",
     "typescript": "^5.7.2"

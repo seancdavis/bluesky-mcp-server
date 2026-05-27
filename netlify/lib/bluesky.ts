@@ -52,16 +52,6 @@ export async function resolveActorDid(agent: AtpAgent, input: string): Promise<s
   return (await agent.resolveHandle({ handle: trimmed })).data.did;
 }
 
-export async function getPostRef(
-  agent: AtpAgent,
-  uri: string,
-): Promise<{ uri: string; cid: string }> {
-  const res = await agent.getPosts({ uris: [uri] });
-  const post = res.data.posts[0];
-  if (!post) throw new Error(`Post not found: ${uri}`);
-  return { uri: post.uri, cid: post.cid };
-}
-
 export function bskyUrlFromAtUri(uri: string, handle?: string): string | undefined {
   const m = uri.match(/^at:\/\/(did:[^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/);
   if (!m) return undefined;
