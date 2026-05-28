@@ -15,7 +15,7 @@ token to) can call it.
 
 | Tool | Purpose |
 | --- | --- |
-| `create_post` | Publish a new post or reply. |
+| `create_post` | Publish a new post or reply, with optional image attachments. |
 | `delete_post` | Delete one of your own posts. |
 | `get_timeline` | Fetch your home timeline. |
 | `get_notifications` | Likes, replies, mentions, follows, reposts, quotes. |
@@ -26,6 +26,21 @@ token to) can call it.
 | `like_post` / `unlike_post` | Like / remove like. |
 | `repost` / `unrepost` | Repost / remove repost. |
 | `follow_user` / `unfollow_user` | Follow / unfollow by handle or DID. |
+| `prepare_upload` / `finalize_upload` | Two-step presigned-URL flow for attaching images to posts. |
+
+### Attaching images to a post
+
+Bluesky stores images as blobs on the user's PDS, not as URLs. To attach images to a post, the
+client uploads bytes through this server in three steps:
+
+1. **`prepare_upload`** — call with `filename`, `content_type`, and `size`. Get back a short-lived
+   (5-minute) `upload_url` and an `upload_handle`.
+2. **PUT the raw bytes** to `upload_url` with header `Content-Type: <content_type>`. No
+   Authorization header is needed — the capability is in the signed URL.
+3. **`finalize_upload`** — call with the `upload_handle`. Get back a stable `blob_key`.
+
+Then call `create_post` with `images: [{ blob_key, alt }]`. Alt text is required for
+accessibility. Up to 4 images per post (Bluesky's limit).
 
 ## Setup
 
@@ -63,14 +78,19 @@ Copy `.env.example` to `.env` and fill in:
 BLUESKY_IDENTIFIER=yourhandle.bsky.social
 BLUESKY_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 MCP_BEARER_TOKEN=<the hex string from step 3>
+MCP_UPLOAD_SIGNING_SECRET=<another hex string, e.g. `openssl rand -hex 32`>
 ```
 
-For production deploys, set the same three variables in Netlify:
+`MCP_UPLOAD_SIGNING_SECRET` is the HMAC key used to sign presigned upload URLs for the image
+attachment flow. It is independent of `MCP_BEARER_TOKEN` and should be a separate random secret.
+
+For production deploys, set the same variables in Netlify:
 
 ```bash
 npx netlify env:set BLUESKY_IDENTIFIER yourhandle.bsky.social
 npx netlify env:set BLUESKY_APP_PASSWORD xxxx-xxxx-xxxx-xxxx
 npx netlify env:set MCP_BEARER_TOKEN <token>
+npx netlify env:set MCP_UPLOAD_SIGNING_SECRET <upload-secret>
 ```
 
 ### 5. Run locally
@@ -135,13 +155,16 @@ guarantee. If Claude is misbehaving, revoke its app password at
 netlify/
   functions/
     mcp.ts                 # Netlify v2 function — mounts /mcp, bearer auth, JSON-RPC entry
+    mcp-upload.ts          # PUT-only endpoint for raw bytes (signed URL auth, no bearer)
   lib/
     bluesky.ts             # AtpAgent singleton, URI/handle resolution helpers
+    uploads.ts             # Netlify Blobs staging store for in-flight image uploads
     mcp/
       bearer.ts            # Constant-time bearer-token check
       protocol.ts          # JSON-RPC types and helpers
       dispatch.ts          # JSON-RPC dispatcher (initialize, tools/list, tools/call, ping)
       tools.ts             # Plain registry of Bluesky tool definitions
+      upload-tokens.ts     # HMAC-SHA256 signed tokens for presigned uploads
 ```
 
 The server speaks plain JSON-RPC over HTTP POST — no Streamable HTTP transport,

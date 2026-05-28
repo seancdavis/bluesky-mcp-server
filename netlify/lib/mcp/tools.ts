@@ -9,7 +9,11 @@ import {
   resolveActorDid,
   resolvePostUri,
 } from "../bluesky";
-import { getStagedUploadMetadata } from "../uploads";
+import {
+  deleteStagedUpload,
+  getStagedUploadMetadata,
+  readStagedUpload,
+} from "../uploads";
 import { signUploadToken, type UploadTokenPayload } from "./upload-tokens";
 
 export interface ToolContent {
@@ -169,6 +173,8 @@ export const tools: ToolDefinition[] = [
       "Text limit is 300 graphemes. Mentions (@handle) and URLs are auto-linked.",
       "",
       "To reply, pass `reply_to` as either an at:// URI or a https://bsky.app/profile/<handle>/post/<rkey> URL.",
+      "",
+      "To attach images (up to 4), pass `images` as a list of `{ blob_key, alt }`. Obtain each `blob_key` via prepare_upload → PUT → finalize_upload. Alt text is required for accessibility — write a real description of the image, not 'image' or 'photo'.",
     ].join("\n"),
     inputSchema: {
       type: "object",
@@ -178,12 +184,52 @@ export const tools: ToolDefinition[] = [
           type: "string",
           description: "Optional. AT URI or bsky.app URL of the post being replied to.",
         },
+        images: {
+          type: "array",
+          maxItems: 4,
+          description: "Optional. Up to 4 images to attach to the post.",
+          items: {
+            type: "object",
+            properties: {
+              blob_key: {
+                type: "string",
+                description: "blob_key returned by finalize_upload.",
+              },
+              alt: {
+                type: "string",
+                description: "Required alt text describing the image for accessibility.",
+              },
+            },
+            required: ["blob_key", "alt"],
+          },
+        },
       },
       required: ["text"],
     },
     handler: async (args) => {
       const text = requireString(args, "text");
       const replyTo = optionalString(args, "reply_to");
+      const imagesRaw = Array.isArray(args.images) ? (args.images as unknown[]) : [];
+      if (imagesRaw.length > 4) {
+        return fail("Bluesky allows a maximum of 4 images per post.");
+      }
+      const imageInputs: { blob_key: string; alt: string }[] = [];
+      for (const [i, entry] of imagesRaw.entries()) {
+        if (!entry || typeof entry !== "object") {
+          return fail(`images[${i}] must be an object with blob_key and alt.`);
+        }
+        const e = entry as Record<string, unknown>;
+        const blobKey = typeof e.blob_key === "string" ? e.blob_key : "";
+        const alt = typeof e.alt === "string" ? e.alt : "";
+        if (!blobKey) return fail(`images[${i}].blob_key is required.`);
+        if (!alt.trim()) {
+          return fail(
+            `images[${i}].alt is required — provide a real description of the image for accessibility.`,
+          );
+        }
+        imageInputs.push({ blob_key: blobKey, alt });
+      }
+
       try {
         const agent = await getAgent();
         const rt = new RichText({ text });
@@ -202,12 +248,45 @@ export const tools: ToolDefinition[] = [
           reply = { root, parent: { uri: parent.uri, cid: parent.cid } };
         }
 
+        let embed: { $type: string; [k: string]: unknown } | undefined;
+        if (imageInputs.length > 0) {
+          const uploaded: { image: unknown; alt: string }[] = [];
+          for (const [i, input] of imageInputs.entries()) {
+            const staged = await readStagedUpload(input.blob_key);
+            if (!staged) {
+              return fail(
+                `images[${i}]: no staged upload found for blob_key ${input.blob_key}. Did you call finalize_upload?`,
+              );
+            }
+            const res = await agent.uploadBlob(staged.bytes, {
+              encoding: staged.metadata.contentType,
+            });
+            uploaded.push({ image: res.data.blob, alt: input.alt });
+          }
+          embed = {
+            $type: "app.bsky.embed.images",
+            images: uploaded,
+          };
+        }
+
         const result = await agent.post({
           text: rt.text,
           facets: rt.facets,
           ...(reply ? { reply } : {}),
+          ...(embed ? { embed } : {}),
           createdAt: new Date().toISOString(),
         });
+
+        for (const input of imageInputs) {
+          try {
+            await deleteStagedUpload(input.blob_key);
+          } catch (err) {
+            console.warn(
+              `[MCP] failed to clean up staged blob ${input.blob_key}: ${(err as Error).message}`,
+            );
+          }
+        }
+
         const url = bskyUrlFromAtUri(result.uri, agent.session?.handle);
         return ok(
           `Posted.\nuri: ${result.uri}\ncid: ${result.cid}${url ? `\nurl: ${url}` : ""}`,
