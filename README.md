@@ -22,6 +22,7 @@ token to) can call it.
 | `get_post_thread` | Fetch a post with its parent chain and replies. |
 | `search_posts` | Keyword search across Bluesky. |
 | `search_users` | Find users by handle, name, or description. |
+| `get_profile` | Fetch a user's profile with bio, counts, and your relationship to them. |
 | `like_post` / `unlike_post` | Like / remove like. |
 | `repost` / `unrepost` | Repost / remove repost. |
 | `follow_user` / `unfollow_user` | Follow / unfollow by handle or DID. |

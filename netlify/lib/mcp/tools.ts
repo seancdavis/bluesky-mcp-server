@@ -374,6 +374,55 @@ export const tools: ToolDefinition[] = [
   },
 
   {
+    name: "get_profile",
+    description: [
+      "Fetch a detailed profile for a Bluesky user: bio, follower/following/post counts, join date, and your relationship to them (already following, blocking, etc.).",
+      "",
+      "Useful before calling `follow_user` to decide whether they're worth following, or to check whether you already follow / are blocked by someone before engaging.",
+      "",
+      "Accepts a handle (with or without @) or a DID.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: { actor: { type: "string", description: "Handle (with or without @) or DID." } },
+      required: ["actor"],
+    },
+    handler: async (args) => {
+      const actor = requireString(args, "actor");
+      try {
+        const agent = await getAgent();
+        const did = await resolveActorDid(agent, actor);
+        const res = await agent.getProfile({ actor: did });
+        const p = res.data;
+        const name = p.displayName ? `${p.displayName} (@${p.handle})` : `@${p.handle}`;
+        const counts = [
+          `followers: ${p.followersCount ?? 0}`,
+          `following: ${p.followsCount ?? 0}`,
+          `posts: ${p.postsCount ?? 0}`,
+        ].join("  ·  ");
+        const viewerBits: string[] = [];
+        if (p.viewer?.following) viewerBits.push("you follow them");
+        if (p.viewer?.followedBy) viewerBits.push("they follow you");
+        if (p.viewer?.muted) viewerBits.push("muted by you");
+        if (p.viewer?.blocking) viewerBits.push("blocked by you");
+        if (p.viewer?.blockedBy) viewerBits.push("they block you");
+        const lines = [
+          name,
+          `did: ${p.did}`,
+          counts,
+          p.createdAt ? `joined: ${p.createdAt}` : "",
+          p.description ? `\n${p.description}` : "",
+          viewerBits.length > 0 ? `\nrelationship: ${viewerBits.join(", ")}` : "",
+          `\nurl: https://bsky.app/profile/${p.handle}`,
+        ].filter(Boolean);
+        return ok(lines.join("\n"));
+      } catch (err) {
+        return fail(`Failed to fetch profile: ${(err as Error).message}`);
+      }
+    },
+  },
+
+  {
     name: "search_users",
     description: "Search for Bluesky users by handle, name, or description.",
     inputSchema: {
