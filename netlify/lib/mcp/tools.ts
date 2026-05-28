@@ -9,6 +9,8 @@ import {
   resolveActorDid,
   resolvePostUri,
 } from "../bluesky";
+import { getStagedUploadMetadata } from "../uploads";
+import { signUploadToken, type UploadTokenPayload } from "./upload-tokens";
 
 export interface ToolContent {
   type: "text";
@@ -598,6 +600,104 @@ export const tools: ToolDefinition[] = [
         return ok(`Unfollowed ${did}`);
       } catch (err) {
         return fail(`Failed to unfollow: ${(err as Error).message}`);
+      }
+    },
+  },
+
+  {
+    name: "prepare_upload",
+    description: [
+      "Step 1 of the image-upload flow.",
+      "",
+      "Returns a short-lived (5 min) signed `upload_url` and an `upload_handle`. PUT the raw file bytes to `upload_url` with a Content-Type header matching the declared `content_type`. No Authorization header is needed on the PUT — the capability is in the signed URL.",
+      "",
+      "Then call `finalize_upload` with the handle to obtain a stable blob key that `create_post` accepts in its `images` array.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Original filename (used for metadata)." },
+        content_type: {
+          type: "string",
+          description: "MIME type the client will send on the PUT (e.g. image/jpeg, image/png).",
+        },
+        size: {
+          type: "number",
+          description: "Declared upper-bound byte count. The PUT is rejected if the body exceeds this.",
+        },
+      },
+      required: ["filename", "content_type", "size"],
+    },
+    handler: async (args) => {
+      const filename = requireString(args, "filename");
+      const contentType = requireString(args, "content_type");
+      const sizeRaw = optionalNumber(args, "size");
+      if (sizeRaw === undefined || sizeRaw <= 0) {
+        return fail("`size` must be a positive number.");
+      }
+      try {
+        const uploadId = crypto.randomUUID();
+        const exp = Math.floor(Date.now() / 1000) + 5 * 60;
+        const payload: UploadTokenPayload = {
+          uploadId,
+          filename,
+          contentType,
+          size: sizeRaw,
+          exp,
+        };
+        const token = signUploadToken(payload);
+        const baseUrl = process.env.URL ?? "";
+        const uploadUrl = `${baseUrl}/mcp/upload/${token}`;
+        return ok(
+          [
+            `upload_url: ${uploadUrl}`,
+            `upload_handle: ${uploadId}`,
+            `expires_in: 300s`,
+            "",
+            `PUT the file bytes to upload_url with header "Content-Type: ${contentType}", then call finalize_upload.`,
+          ].join("\n"),
+        );
+      } catch (err) {
+        return fail(`Failed to prepare upload: ${(err as Error).message}`);
+      }
+    },
+  },
+
+  {
+    name: "finalize_upload",
+    description: [
+      "Step 2 of the image-upload flow.",
+      "",
+      "Confirms that bytes for the given `upload_handle` have landed in staging, and returns a stable `blob_key` you can pass to `create_post` in its `images` array.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        upload_handle: {
+          type: "string",
+          description: "The upload_handle returned by prepare_upload.",
+        },
+      },
+      required: ["upload_handle"],
+    },
+    handler: async (args) => {
+      const handle = requireString(args, "upload_handle");
+      try {
+        const meta = await getStagedUploadMetadata(handle);
+        if (!meta) {
+          return fail(
+            `No upload found for handle ${handle}. PUT the bytes to upload_url first, then retry.`,
+          );
+        }
+        return ok(
+          [
+            `blob_key: ${handle}`,
+            `content_type: ${meta.contentType}`,
+            `filename: ${meta.filename}`,
+          ].join("\n"),
+        );
+      } catch (err) {
+        return fail(`Failed to finalize upload: ${(err as Error).message}`);
       }
     },
   },
