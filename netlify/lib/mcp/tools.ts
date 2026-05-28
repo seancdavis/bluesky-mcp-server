@@ -1,4 +1,8 @@
-import { RichText, type AppBskyFeedDefs, type AppBskyNotificationListNotifications } from "@atproto/api";
+import {
+  AppBskyFeedDefs,
+  RichText,
+  type AppBskyNotificationListNotifications,
+} from "@atproto/api";
 import {
   bskyUrlFromAtUri,
   getAgent,
@@ -73,6 +77,72 @@ function formatPostView(post: AppBskyFeedDefs.PostView): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function formatThread(thread: unknown): string {
+  if (AppBskyFeedDefs.isNotFoundPost(thread)) {
+    return `(post not found: ${thread.uri})`;
+  }
+  if (AppBskyFeedDefs.isBlockedPost(thread)) {
+    return `(blocked post: ${thread.uri})`;
+  }
+  if (!AppBskyFeedDefs.isThreadViewPost(thread)) {
+    return "(unrecognized thread node)";
+  }
+
+  const sections: string[] = [];
+
+  const ancestors: AppBskyFeedDefs.PostView[] = [];
+  let cursor: unknown = thread.parent;
+  while (AppBskyFeedDefs.isThreadViewPost(cursor)) {
+    ancestors.unshift(cursor.post);
+    cursor = cursor.parent;
+  }
+  if (AppBskyFeedDefs.isNotFoundPost(cursor)) {
+    sections.push(`(parent chain truncated — earliest visible parent not found: ${cursor.uri})`);
+  } else if (AppBskyFeedDefs.isBlockedPost(cursor)) {
+    sections.push(`(parent chain truncated — blocked post: ${cursor.uri})`);
+  }
+  if (ancestors.length > 0) {
+    sections.push("── Parents (oldest → newest) ──");
+    ancestors.forEach((p, i) => {
+      sections.push(`[parent ${i + 1}]\n${formatPostView(p)}`);
+    });
+  }
+
+  sections.push("── Target post ──");
+  sections.push(formatPostView(thread.post));
+
+  const replyLines: string[] = [];
+  const walkReplies = (replies: unknown[] | undefined, depth: number): void => {
+    if (!replies) return;
+    for (const r of replies) {
+      const indent = "  ".repeat(depth);
+      if (AppBskyFeedDefs.isNotFoundPost(r)) {
+        replyLines.push(`${indent}↳ (not found: ${r.uri})`);
+        continue;
+      }
+      if (AppBskyFeedDefs.isBlockedPost(r)) {
+        replyLines.push(`${indent}↳ (blocked: ${r.uri})`);
+        continue;
+      }
+      if (AppBskyFeedDefs.isThreadViewPost(r)) {
+        const body = formatPostView(r.post)
+          .split("\n")
+          .map((l) => `${indent}  ${l}`)
+          .join("\n");
+        replyLines.push(`${indent}↳\n${body}`);
+        walkReplies(r.replies, depth + 1);
+      }
+    }
+  };
+  if (thread.replies && thread.replies.length > 0) {
+    sections.push("── Replies ──");
+    walkReplies(thread.replies, 0);
+    sections.push(replyLines.join("\n\n"));
+  }
+
+  return sections.join("\n\n");
 }
 
 function formatNotification(n: AppBskyNotificationListNotifications.Notification): string {
@@ -227,6 +297,45 @@ export const tools: ToolDefinition[] = [
         return ok((formatted || "(no notifications)") + tail);
       } catch (err) {
         return fail(`Failed to fetch notifications: ${(err as Error).message}`);
+      }
+    },
+  },
+
+  {
+    name: "get_post_thread",
+    description: [
+      "Fetch a post together with its parent chain and replies.",
+      "",
+      "Useful when something in the timeline or notifications is a reply and you need to see what it's responding to, or when you want to read the conversation under a post before engaging.",
+      "",
+      "Accepts an at:// URI or a https://bsky.app/profile/<handle>/post/<rkey> URL.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        uri: { type: "string", description: "AT URI or bsky.app URL of the post." },
+        depth: {
+          type: "number",
+          description: "How many levels of replies to include (0-1000). Default 6.",
+        },
+        parent_height: {
+          type: "number",
+          description: "How many ancestor levels to walk up (0-1000). Default 80.",
+        },
+      },
+      required: ["uri"],
+    },
+    handler: async (args) => {
+      const uri = requireString(args, "uri");
+      const depth = clamp(optionalNumber(args, "depth") ?? 6, 0, 1000);
+      const parentHeight = clamp(optionalNumber(args, "parent_height") ?? 80, 0, 1000);
+      try {
+        const agent = await getAgent();
+        const resolved = await resolvePostUri(agent, uri);
+        const res = await agent.getPostThread({ uri: resolved, depth, parentHeight });
+        return ok(formatThread(res.data.thread));
+      } catch (err) {
+        return fail(`Failed to fetch thread: ${(err as Error).message}`);
       }
     },
   },

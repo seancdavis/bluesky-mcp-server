@@ -19,6 +19,7 @@ token to) can call it.
 | `delete_post` | Delete one of your own posts. |
 | `get_timeline` | Fetch your home timeline. |
 | `get_notifications` | Likes, replies, mentions, follows, reposts, quotes. |
+| `get_post_thread` | Fetch a post with its parent chain and replies. |
 | `search_posts` | Keyword search across Bluesky. |
 | `search_users` | Find users by handle, name, or description. |
 | `like_post` / `unlike_post` | Like / remove like. |
