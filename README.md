@@ -154,21 +154,24 @@ guarantee. If Claude is misbehaving, revoke its app password at
 ```
 netlify/
   functions/
-    mcp.ts                 # Netlify v2 function — mounts /mcp, bearer auth, JSON-RPC entry
+    mcp.ts                 # Netlify v2 function — mounts /mcp, bearer auth, drives the SDK transport
     mcp-upload.ts          # PUT-only endpoint for raw bytes (signed URL auth, no bearer)
   lib/
     bluesky.ts             # AtpAgent singleton, URI/handle resolution helpers
     uploads.ts             # Netlify Blobs staging store for in-flight image uploads
     mcp/
       bearer.ts            # Constant-time bearer-token check
-      protocol.ts          # JSON-RPC types and helpers
-      dispatch.ts          # JSON-RPC dispatcher (initialize, tools/list, tools/call, ping)
+      server.ts            # Builds a low-level MCP Server, registers tools/list + tools/call
       tools.ts             # Plain registry of Bluesky tool definitions
       upload-tokens.ts     # HMAC-SHA256 signed tokens for presigned uploads
 ```
 
-The server speaks plain JSON-RPC over HTTP POST — no Streamable HTTP transport,
-no SSE, no session state. Each request is independent.
+The server uses the official MCP SDK's `StreamableHTTPServerTransport` in stateless
+mode (`sessionIdGenerator: undefined`, `enableJsonResponse: true`), bridged onto
+Netlify's Web `Request`/`Response` via `fetch-to-node`. A fresh server + transport
+is created per request — no session state. Note that the transport requires the
+client's `Accept` header to list **both** `application/json` and `text/event-stream`,
+or it answers `406 Not Acceptable`.
 
 ## License
 

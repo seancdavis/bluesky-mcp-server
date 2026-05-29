@@ -1,7 +1,8 @@
 import type { Config, Context } from "@netlify/functions";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { toFetchResponse, toReqRes } from "fetch-to-node";
 import { checkBearer } from "../lib/mcp/bearer";
-import { dispatch } from "../lib/mcp/dispatch";
-import { ERROR_CODES, error } from "../lib/mcp/protocol";
+import { buildServer } from "../lib/mcp/server";
 
 export default async (req: Request, _context: Context) => {
   if (!checkBearer(req)) {
@@ -16,14 +17,34 @@ export default async (req: Request, _context: Context) => {
   try {
     body = await req.json();
   } catch {
-    return Response.json(error(null, ERROR_CODES.PARSE_ERROR, "Parse error"));
+    return Response.json(
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+      { status: 400 },
+    );
   }
 
-  const response = await dispatch(body);
-  if (response === null) {
-    return new Response(null, { status: 204 });
-  }
-  return Response.json(response);
+  // Bridge the Web Request/Response into the Node req/res that the SDK's
+  // StreamableHTTPServerTransport expects.
+  const { req: nodeReq, res: nodeRes } = toReqRes(req);
+
+  // Stateless: a brand-new server + transport per request, no session id.
+  // enableJsonResponse makes the transport answer with a single application/json
+  // body instead of opening an SSE stream — the right fit for a serverless POST.
+  const server = buildServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  nodeRes.on("close", () => {
+    void transport.close();
+    void server.close();
+  });
+
+  await server.connect(transport);
+  await transport.handleRequest(nodeReq, nodeRes, body);
+
+  return toFetchResponse(nodeRes);
 };
 
 export const config: Config = {

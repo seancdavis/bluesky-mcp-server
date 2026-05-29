@@ -11,7 +11,10 @@
   },
   "dependencies": {
     "@atproto/api": "^0.13.35",
-    "@netlify/blobs": "^10.7.8"
+    "@modelcontextprotocol/sdk": "1.24.0",
+    "@netlify/blobs": "^10.7.8",
+    "fetch-to-node": "^2.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@netlify/functions": "^3.0.0",
